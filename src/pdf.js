@@ -11,6 +11,20 @@ function loadImage(src) {
   });
 }
 
+export function computeObjectFitPlacement(sourceWidth, sourceHeight, targetWidth, targetHeight, fitMode, positionX = 50, positionY = 50) {
+  const fitScale = fitMode === 'contain'
+    ? Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight)
+    : Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const width = sourceWidth * fitScale;
+  const height = sourceHeight * fitScale;
+  return {
+    width,
+    height,
+    left: (targetWidth - width) * (positionX / 100),
+    top: (targetHeight - height) * (positionY / 100),
+  };
+}
+
 async function renderCell(item, widthMm, heightMm, fitMode) {
   const width = Math.max(1, Math.round((widthMm / 25.4) * RENDER_DPI));
   const height = Math.max(1, Math.round((heightMm / 25.4) * RENDER_DPI));
@@ -23,27 +37,30 @@ async function renderCell(item, widthMm, heightMm, fitMode) {
 
   const source = await loadImage(item.src);
   const rotation = ((item.rotation % 360) + 360) % 360;
-  const turnsSideways = rotation === 90 || rotation === 270;
-  const rotatedWidth = turnsSideways ? source.naturalHeight : source.naturalWidth;
-  const rotatedHeight = turnsSideways ? source.naturalWidth : source.naturalHeight;
-  const fitScale = fitMode === 'contain'
-    ? Math.min(width / rotatedWidth, height / rotatedHeight)
-    : Math.max(width / rotatedWidth, height / rotatedHeight);
-  const scale = fitScale * (item.zoom / 100);
-  const boundsWidth = rotatedWidth * scale;
-  const boundsHeight = rotatedHeight * scale;
-  const left = (width - boundsWidth) * (item.x / 100);
-  const top = (height - boundsHeight) * (item.y / 100);
+  const zoom = item.zoom / 100;
+  const placement = computeObjectFitPlacement(
+    source.naturalWidth,
+    source.naturalHeight,
+    width,
+    height,
+    fitMode,
+    item.x,
+    item.y,
+  );
 
+  // Match the preview exactly: object-fit/object-position paint the image first,
+  // then CSS transforms the complete image element around the cell center.
   context.save();
-  context.translate(left + boundsWidth / 2, top + boundsHeight / 2);
+  context.translate(width / 2, height / 2);
   context.rotate((rotation * Math.PI) / 180);
+  context.scale(zoom, zoom);
+  context.translate(-width / 2, -height / 2);
   context.drawImage(
     source,
-    -(source.naturalWidth * scale) / 2,
-    -(source.naturalHeight * scale) / 2,
-    source.naturalWidth * scale,
-    source.naturalHeight * scale,
+    placement.left,
+    placement.top,
+    placement.width,
+    placement.height,
   );
   context.restore();
   return canvas.toDataURL('image/jpeg', 0.94);
