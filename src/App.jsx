@@ -14,6 +14,7 @@ import {
 } from '@phosphor-icons/react';
 import { effectiveDpi, pageGeometry, paginate, templateForCount } from './layout';
 import { createLayoutPdf } from './pdf';
+import { loadWorkspace, saveWorkspace } from './storage';
 
 const PdfPreview = lazy(() => import('./PdfPreview').then((module) => ({ default: module.PdfPreview })));
 
@@ -59,15 +60,16 @@ function RangeField({ label, value, min, max, step = 1, unit = '', onChange }) {
   );
 }
 
-function ImageTile({ image, selected, fitMode, onSelect, onPositionChange }) {
+function ImageTile({ image, selected, primary, fitMode, onSelect, onPositionChange, onDelete }) {
   const pointer = useRef(null);
   const start = useRef(null);
 
   const beginDrag = (event) => {
+    event.currentTarget.focus({ preventScroll: true });
     event.currentTarget.setPointerCapture(event.pointerId);
     pointer.current = event.pointerId;
     start.current = { clientX: event.clientX, clientY: event.clientY, x: image.x, y: image.y };
-    onSelect();
+    onSelect(event);
   };
 
   const moveImage = (event) => {
@@ -84,69 +86,186 @@ function ImageTile({ image, selected, fitMode, onSelect, onPositionChange }) {
   };
 
   return (
-    <button
-      className={`image-tile ${selected ? 'is-selected' : ''}`}
-      type="button"
-      aria-label={`调整 ${image.name}`}
-      onPointerDown={beginDrag}
-      onPointerMove={moveImage}
-      onPointerUp={endDrag}
-      onPointerCancel={endDrag}
-    >
-      <img
-        src={image.src}
-        alt=""
-        draggable="false"
-        style={{
-          objectFit: fitMode,
-          objectPosition: `${image.x}% ${image.y}%`,
-          transform: `scale(${image.zoom / 100}) rotate(${image.rotation}deg)`,
-        }}
-      />
-    </button>
+    <div className={`image-tile-wrap ${selected ? 'is-selected' : ''}`}>
+      <button
+        className="image-tile"
+        type="button"
+        aria-label={`调整 ${image.name}`}
+        onPointerDown={beginDrag}
+        onPointerMove={moveImage}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
+        <img
+          src={image.src}
+          alt=""
+          draggable="false"
+          style={{
+            objectFit: fitMode,
+            objectPosition: `${image.x}% ${image.y}%`,
+            transform: `scale(${image.zoom / 100}) rotate(${image.rotation}deg)`,
+          }}
+        />
+      </button>
+      {primary && <button className="tile-delete" type="button" onClick={onDelete} aria-label="删除所有选中的图片" title="删除所有选中的图片"><Trash weight="fill" /></button>}
+    </div>
   );
 }
 
 export function App() {
   const [images, setImages] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
   const [isDropActive, setDropActive] = useState(false);
   const [notice, setNotice] = useState({ type: 'idle', message: '' });
   const [isPrinting, setPrinting] = useState(false);
   const [pdfUrl, setPdfUrl] = useState('');
   const [pdfProgress, setPdfProgress] = useState(0);
   const fileInput = useRef(null);
+  const selectedIdsRef = useRef([]);
+  const selectionAnchorRef = useRef(null);
+  const sweepSelectionRef = useRef(null);
+  const hasRestoredRef = useRef(false);
+  const saveTimerRef = useRef(null);
+  const pdfUrlRef = useRef('');
 
+  const selectedId = selectedIds.at(-1) || null;
   const selected = images.find((image) => image.id === selectedId) || null;
   const pages = useMemo(() => paginate(images, settings.capacity), [images, settings.capacity]);
 
-  const removeImage = useCallback((imageId) => {
-    setImages((current) => current.filter((image) => image.id !== imageId));
-    setSelectedId((current) => current === imageId ? null : current);
+  const removeImages = useCallback((imageIds) => {
+    const removing = new Set(imageIds);
+    setImages((current) => current.filter((image) => !removing.has(image.id)));
+    setSelectedIds((current) => current.filter((imageId) => !removing.has(imageId)));
   }, []);
+
+  const removeImage = useCallback((imageId) => removeImages([imageId]), [removeImages]);
+
+  const selectImage = useCallback((imageId, event = {}) => {
+    const additive = event.ctrlKey || event.metaKey;
+    setSelectedIds((current) => {
+      if (event.shiftKey && selectionAnchorRef.current) {
+        const anchorIndex = images.findIndex((image) => image.id === selectionAnchorRef.current);
+        const nextIndex = images.findIndex((image) => image.id === imageId);
+        if (anchorIndex >= 0 && nextIndex >= 0) {
+          const [start, end] = anchorIndex < nextIndex ? [anchorIndex, nextIndex] : [nextIndex, anchorIndex];
+          const rangeIds = images.slice(start, end + 1).map((image) => image.id);
+          return additive ? [...new Set([...current, ...rangeIds])] : rangeIds;
+        }
+      }
+      selectionAnchorRef.current = imageId;
+      if (additive) return current.includes(imageId) ? current.filter((id) => id !== imageId) : [...current, imageId];
+      return [imageId];
+    });
+  }, [images]);
+
+  const beginSweepSelection = (imageId, event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const willSelect = !selectedIdsRef.current.includes(imageId);
+    sweepSelectionRef.current = { willSelect };
+    setSelectedIds((current) => willSelect
+      ? [...new Set([...(event.ctrlKey || event.metaKey ? current : []), imageId])]
+      : current.filter((id) => id !== imageId));
+    selectionAnchorRef.current = imageId;
+  };
+
+  const continueSweepSelection = (imageId, event) => {
+    if (!sweepSelectionRef.current || event.pointerType === 'touch' && !event.isPrimary) return;
+    const { willSelect } = sweepSelectionRef.current;
+    setSelectedIds((current) => willSelect
+      ? current.includes(imageId) ? current : [...current, imageId]
+      : current.filter((id) => id !== imageId));
+  };
+
+  selectedIdsRef.current = selectedIds;
+  pdfUrlRef.current = pdfUrl;
 
   useEffect(() => () => {
     if (pdfUrl) URL.revokeObjectURL(pdfUrl);
   }, [pdfUrl]);
 
   useEffect(() => {
+    let cancelled = false;
+    loadWorkspace().then((saved) => {
+      if (cancelled) return;
+      if (saved?.images?.length) {
+        setImages(saved.images);
+        setSettings({ ...DEFAULT_SETTINGS, ...saved.settings });
+        setSelectedIds(saved.images[0]?.id ? [saved.images[0].id] : []);
+        setNotice({ type: 'success', message: `已从本机恢复 ${saved.images.length} 张图片和上次版面。` });
+      }
+    }).catch(() => {
+      if (!cancelled) setNotice({ type: 'error', message: '无法读取本机缓存，本次仍可正常排版，但刷新后可能无法恢复。' });
+    }).finally(() => { hasRestoredRef.current = true; });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!hasRestoredRef.current) return undefined;
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveWorkspace({ images, settings }).catch(() => {
+        setNotice({ type: 'error', message: '本机缓存写入失败，可能是浏览器存储空间不足。' });
+      });
+    }, 250);
+    return () => clearTimeout(saveTimerRef.current);
+  }, [images, settings]);
+
+  useEffect(() => {
     const handleDeleteKey = (event) => {
-      if (!selectedId || pdfUrl || (event.key !== 'Delete' && event.key !== 'Backspace')) return;
+      const isDeleteKey = event.key === 'Delete'
+        || event.key === 'Backspace'
+        || event.key === 'Del'
+        || event.code === 'Delete'
+        || event.code === 'Backspace'
+        || event.keyCode === 46
+        || event.keyCode === 8;
+      const imageIds = selectedIdsRef.current;
+      if (!isDeleteKey || !imageIds.length || pdfUrlRef.current) return;
       const target = event.target;
-      const isEditing = target instanceof HTMLElement && (
+      const isTextInput = target instanceof HTMLInputElement && !['range', 'button', 'checkbox', 'radio', 'color', 'file'].includes(target.type);
+      const isTextEditing = target instanceof HTMLElement && (
         target.isContentEditable
-        || target.matches('input, textarea, select, option')
+        || target instanceof HTMLTextAreaElement
+        || isTextInput
         || Boolean(target.closest('[contenteditable="true"]'))
       );
-      if (isEditing) return;
+      if (isTextEditing) return;
       event.preventDefault();
-      removeImage(selectedId);
-      setNotice({ type: 'success', message: '已删除选中的图片，版面已自动重排。' });
+      event.stopPropagation();
+      removeImages(imageIds);
+      setNotice({ type: 'success', message: `已删除 ${imageIds.length} 张选中图片，版面已自动重排。` });
     };
-    window.addEventListener('keydown', handleDeleteKey);
-    return () => window.removeEventListener('keydown', handleDeleteKey);
-  }, [pdfUrl, removeImage, selectedId]);
+    document.addEventListener('keydown', handleDeleteKey, true);
+    return () => document.removeEventListener('keydown', handleDeleteKey, true);
+  }, [removeImages]);
+
+  useEffect(() => {
+    const stopSweepSelection = () => { sweepSelectionRef.current = null; };
+    const trackSweepSelection = (event) => {
+      if (!sweepSelectionRef.current) return;
+      const row = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-image-id]');
+      const imageId = row?.dataset.imageId;
+      if (!imageId) return;
+      const { willSelect } = sweepSelectionRef.current;
+      setSelectedIds((current) => willSelect
+        ? current.includes(imageId) ? current : [...current, imageId]
+        : current.filter((id) => id !== imageId));
+    };
+    document.addEventListener('pointermove', trackSweepSelection, true);
+    document.addEventListener('mousemove', trackSweepSelection, true);
+    document.addEventListener('pointerup', stopSweepSelection, true);
+    document.addEventListener('pointercancel', stopSweepSelection, true);
+    document.addEventListener('mouseup', stopSweepSelection, true);
+    return () => {
+      document.removeEventListener('pointermove', trackSweepSelection, true);
+      document.removeEventListener('mousemove', trackSweepSelection, true);
+      document.removeEventListener('pointerup', stopSweepSelection, true);
+      document.removeEventListener('pointercancel', stopSweepSelection, true);
+      document.removeEventListener('mouseup', stopSweepSelection, true);
+    };
+  }, []);
 
   const addFiles = async (fileList) => {
     const files = [...fileList].filter((file) => file.type.startsWith('image/'));
@@ -158,7 +277,7 @@ export function App() {
     try {
       const loaded = await Promise.all(files.map(readImage));
       setImages((current) => [...current, ...loaded]);
-      setSelectedId(loaded[0]?.id || null);
+      setSelectedIds(loaded[0]?.id ? [loaded[0].id] : []);
       setNotice({ type: 'success', message: `已加入 ${loaded.length} 张图片，版面已自动更新。` });
     } catch (error) {
       setNotice({ type: 'error', message: error.message });
@@ -171,7 +290,7 @@ export function App() {
 
   const resetSelected = () => updateSelected({ zoom: 100, x: 50, y: 50, rotation: 0 });
 
-  const removeSelected = () => selectedId && removeImage(selectedId);
+  const removeSelected = () => selectedIds.length && removeImages(selectedIds);
 
   const generatePdf = async () => {
     if (!images.length) return;
@@ -223,23 +342,23 @@ export function App() {
 
       <main className="workspace">
         <aside className="left-panel panel">
-          <div className="panel-heading"><span><b>图片</b><small>{images.length} 张，{pages.length || 0} 页</small></span><button className="icon-button" type="button" onClick={() => fileInput.current?.click()} aria-label="添加图片"><UploadSimple /></button></div>
+          <div className="panel-heading"><span><b>图片</b><small>{images.length} 张 · 已选 {selectedIds.length} 张</small></span><div className="panel-heading-actions">{!!images.length && <button className="text-button" type="button" onClick={() => setSelectedIds(selectedIds.length === images.length ? [] : images.map((image) => image.id))}>{selectedIds.length === images.length ? '取消全选' : '全选'}</button>}<button className="icon-button" type="button" onClick={() => fileInput.current?.click()} aria-label="添加图片"><UploadSimple /></button></div></div>
           <input ref={fileInput} hidden multiple type="file" accept="image/*" onChange={(event) => addFiles(event.target.files)} />
           {!images.length ? (
             <button className="empty-upload" type="button" onClick={() => fileInput.current?.click()}><UploadSimple size={30} /><b>拖入商品图片</b><span>或点击选择多个文件</span><small>支持 JPG、PNG、WebP</small></button>
           ) : (
             <div className="thumb-list">
               {images.map((image, index) => (
-                <div key={image.id} className={`thumb ${selectedId === image.id ? 'is-selected' : ''}`}>
-                  <button className="thumb-select" type="button" onClick={() => setSelectedId(image.id)}>
-                    <img src={image.src} alt="" /><span><b>{index + 1}. {image.name}</b><small>{image.naturalWidth} × {image.naturalHeight}px</small></span>{selectedId === image.id && <Check weight="bold" />}
+                <div key={image.id} data-image-id={image.id} className={`thumb ${selectedIds.includes(image.id) ? 'is-selected' : ''}`} onPointerEnter={(event) => continueSweepSelection(image.id, event)} onMouseEnter={(event) => continueSweepSelection(image.id, event)}>
+                  <button className="thumb-select" type="button" onPointerDown={(event) => beginSweepSelection(image.id, event)}>
+                    <img src={image.src} alt="" draggable="false" /><span><b>{index + 1}. {image.name}</b><small>{image.naturalWidth} × {image.naturalHeight}px</small></span>{selectedIds.includes(image.id) && <Check weight="bold" />}
                   </button>
                   <button className="thumb-delete" type="button" onClick={() => removeImage(image.id)} aria-label={`删除 ${image.name}`} title="删除这张图片"><X /></button>
                 </div>
               ))}
             </div>
           )}
-          {!!images.length && <div className="left-panel-footer"><span>选中图片后按 Delete 或 Backspace 删除</span><button className="add-more" type="button" onClick={() => fileInput.current?.click()}><UploadSimple />继续添加图片</button></div>}
+          {!!images.length && <div className="left-panel-footer"><span>按住鼠标扫过缩略图可多选；Ctrl/⌘ 或 Shift 点击也可多选；Delete / Backspace 批量删除</span><button className="add-more" type="button" onClick={() => fileInput.current?.click()}><UploadSimple />继续添加图片</button></div>}
         </aside>
 
         <section className="canvas-area" aria-label="A4 打印预览">
@@ -270,10 +389,12 @@ export function App() {
                         <ImageTile
                           key={image.id}
                           image={image}
-                          selected={selectedId === image.id}
+                          selected={selectedIds.includes(image.id)}
+                          primary={selectedId === image.id}
                           fitMode={settings.fitMode}
-                          onSelect={() => setSelectedId(image.id)}
+                          onSelect={(event) => selectImage(image.id, event)}
                           onPositionChange={updateSelected}
+                          onDelete={removeSelected}
                         />
                       ))}
                     </div>
@@ -296,13 +417,13 @@ export function App() {
           </div>
 
           <div className="control-section selected-controls">
-            <div className="section-title"><span><b>单图微调</b><small>{selected ? selected.name : '先点击版面中的图片'}</small></span>{selected && <button type="button" className="icon-button" onClick={resetSelected} aria-label="重置图片调整"><ArrowClockwise /></button>}</div>
+            <div className="section-title"><span><b>单图微调</b><small>{selected ? `${selected.name}${selectedIds.length > 1 ? `（共选 ${selectedIds.length} 张）` : ''}` : '先点击版面中的图片'}</small></span>{selected && <button type="button" className="icon-button" onClick={resetSelected} aria-label="重置图片调整"><ArrowClockwise /></button>}</div>
             {selected ? <>
               <RangeField label="缩放" value={selected.zoom} min={80} max={200} unit="%" onChange={(zoom) => updateSelected({ zoom })} />
               <RangeField label="水平位置" value={Math.round(selected.x)} min={0} max={100} unit="%" onChange={(x) => updateSelected({ x })} />
               <RangeField label="垂直位置" value={Math.round(selected.y)} min={0} max={100} unit="%" onChange={(y) => updateSelected({ y })} />
-              <div className="inline-actions"><button type="button" onClick={() => updateSelected({ rotation: (selected.rotation + 90) % 360 })}><ArrowsClockwise />旋转 90°</button><button type="button" className="danger" onClick={removeSelected}><Trash />移除图片</button></div>
-              <div className="keyboard-hint"><kbd>Delete</kbd><span>或</span><kbd>Backspace</kbd><span>删除当前选中图片</span></div>
+              <div className="inline-actions"><button type="button" onClick={() => updateSelected({ rotation: (selected.rotation + 90) % 360 })}><ArrowsClockwise />旋转 90°</button><button type="button" className="danger" onClick={removeSelected}><Trash />删除选中{selectedIds.length > 1 ? ` ${selectedIds.length} 张` : ''}</button></div>
+              <div className="keyboard-hint"><kbd>Delete</kbd><span>或</span><kbd>Backspace</kbd><span>批量删除全部选中图片</span></div>
               <div className={`quality-note ${selectedDpi < 150 ? 'warning' : ''}`}>{selectedDpi < 150 ? <Warning weight="fill" /> : <Check weight="bold" />}<span><b>预计有效分辨率 {selectedDpi} DPI</b><small>{selectedDpi < 150 ? '图片可能偏糊，建议缩小或换高清原图。' : '适合普通 A4 彩色打印。'}</small></span></div>
             </> : <div className="selection-empty">点击纸张上的任意图片，可拖动主体位置并调整缩放。</div>}
           </div>
