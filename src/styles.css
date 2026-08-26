@@ -67,6 +67,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .thumb-delete svg { width: 15px; height: 15px; }
 .add-more { margin: 8px; min-height: 36px; display: flex; justify-content: center; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; background: white; font-size: 12px; font-weight: 650; cursor: pointer; }
 .add-more:hover { border-color: var(--accent); color: var(--accent); }
+.left-panel-footer { padding: 7px 0 0; border-top: 1px solid var(--line); }
+.left-panel-footer > span { display: block; padding: 0 12px 2px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.left-panel-footer .add-more { width: calc(100% - 16px); }
 
 .canvas-area { position: relative; min-width: 0; overflow: auto; padding: 58px 34px 70px; background-color: #dfe3e8; background-image: radial-gradient(#c9cfd6 0.8px, transparent 0.8px); background-size: 16px 16px; }
 .canvas-toolbar { position: fixed; z-index: 3; top: 80px; left: 284px; right: 326px; height: 34px; display: flex; align-items: center; justify-content: center; gap: 18px; pointer-events: none; }
@@ -110,6 +113,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .quality-note b { font-size: 10px; }
 .quality-note small { font-size: 9px; line-height: 1.45; }
 .selection-empty { padding: 14px 8px; color: var(--muted); background: #eef1f3; border-radius: 9px; font-size: 10px; line-height: 1.6; }
+.keyboard-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 9px; color: var(--muted); font-size: 9px; }
+.keyboard-hint kbd { min-width: 40px; padding: 3px 6px; text-align: center; color: #394653; border: 1px solid #c9d0d8; border-bottom-width: 2px; border-radius: 5px; background: #fff; box-shadow: 0 1px 0 rgba(31, 39, 47, .05); font-family: "Segoe UI Variable", "Microsoft YaHei UI", system-ui, sans-serif; font-size: 9px; }
 .print-help { display: grid; gap: 7px; padding: 10px; border: 1px solid #d9dee4; border-radius: 9px; background: white; }
 .print-help b { font-size: 11px; }
 .print-help span { position: relative; padding-left: 14px; color: var(--muted); font-size: 10px; }

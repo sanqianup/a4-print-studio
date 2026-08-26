@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowClockwise,
   ArrowsClockwise,
@@ -121,9 +121,32 @@ export function App() {
   const selected = images.find((image) => image.id === selectedId) || null;
   const pages = useMemo(() => paginate(images, settings.capacity), [images, settings.capacity]);
 
+  const removeImage = useCallback((imageId) => {
+    setImages((current) => current.filter((image) => image.id !== imageId));
+    setSelectedId((current) => current === imageId ? null : current);
+  }, []);
+
   useEffect(() => () => {
     if (pdfUrl) URL.revokeObjectURL(pdfUrl);
   }, [pdfUrl]);
+
+  useEffect(() => {
+    const handleDeleteKey = (event) => {
+      if (!selectedId || pdfUrl || (event.key !== 'Delete' && event.key !== 'Backspace')) return;
+      const target = event.target;
+      const isEditing = target instanceof HTMLElement && (
+        target.isContentEditable
+        || target.matches('input, textarea, select, option')
+        || Boolean(target.closest('[contenteditable="true"]'))
+      );
+      if (isEditing) return;
+      event.preventDefault();
+      removeImage(selectedId);
+      setNotice({ type: 'success', message: '已删除选中的图片，版面已自动重排。' });
+    };
+    window.addEventListener('keydown', handleDeleteKey);
+    return () => window.removeEventListener('keydown', handleDeleteKey);
+  }, [pdfUrl, removeImage, selectedId]);
 
   const addFiles = async (fileList) => {
     const files = [...fileList].filter((file) => file.type.startsWith('image/'));
@@ -147,11 +170,6 @@ export function App() {
   };
 
   const resetSelected = () => updateSelected({ zoom: 100, x: 50, y: 50, rotation: 0 });
-
-  const removeImage = (imageId) => {
-    setImages((current) => current.filter((image) => image.id !== imageId));
-    if (selectedId === imageId) setSelectedId(null);
-  };
 
   const removeSelected = () => selectedId && removeImage(selectedId);
 
@@ -221,7 +239,7 @@ export function App() {
               ))}
             </div>
           )}
-          {!!images.length && <button className="add-more" type="button" onClick={() => fileInput.current?.click()}><UploadSimple />继续添加图片</button>}
+          {!!images.length && <div className="left-panel-footer"><span>选中图片后按 Delete 或 Backspace 删除</span><button className="add-more" type="button" onClick={() => fileInput.current?.click()}><UploadSimple />继续添加图片</button></div>}
         </aside>
 
         <section className="canvas-area" aria-label="A4 打印预览">
@@ -283,7 +301,8 @@ export function App() {
               <RangeField label="缩放" value={selected.zoom} min={80} max={200} unit="%" onChange={(zoom) => updateSelected({ zoom })} />
               <RangeField label="水平位置" value={Math.round(selected.x)} min={0} max={100} unit="%" onChange={(x) => updateSelected({ x })} />
               <RangeField label="垂直位置" value={Math.round(selected.y)} min={0} max={100} unit="%" onChange={(y) => updateSelected({ y })} />
-              <div className="inline-actions"><button type="button" onClick={() => updateSelected({ rotation: (selected.rotation + 90) % 360 })}><ArrowsClockwise />旋转 90°</button><button type="button" className="danger" onClick={removeSelected}><Trash />移除</button></div>
+              <div className="inline-actions"><button type="button" onClick={() => updateSelected({ rotation: (selected.rotation + 90) % 360 })}><ArrowsClockwise />旋转 90°</button><button type="button" className="danger" onClick={removeSelected}><Trash />移除图片</button></div>
+              <div className="keyboard-hint"><kbd>Delete</kbd><span>或</span><kbd>Backspace</kbd><span>删除当前选中图片</span></div>
               <div className={`quality-note ${selectedDpi < 150 ? 'warning' : ''}`}>{selectedDpi < 150 ? <Warning weight="fill" /> : <Check weight="bold" />}<span><b>预计有效分辨率 {selectedDpi} DPI</b><small>{selectedDpi < 150 ? '图片可能偏糊，建议缩小或换高清原图。' : '适合普通 A4 彩色打印。'}</small></span></div>
             </> : <div className="selection-empty">点击纸张上的任意图片，可拖动主体位置并调整缩放。</div>}
           </div>
