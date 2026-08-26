@@ -27,6 +27,10 @@ const DEFAULT_SETTINGS = {
   copies: 1,
 };
 
+function containsFiles(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).includes('Files');
+}
+
 function readImage(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -65,6 +69,8 @@ function ImageTile({ image, selected, primary, fitMode, onSelect, onPositionChan
   const start = useRef(null);
 
   const beginDrag = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
     event.currentTarget.focus({ preventScroll: true });
     event.currentTarget.setPointerCapture(event.pointerId);
     pointer.current = event.pointerId;
@@ -74,19 +80,24 @@ function ImageTile({ image, selected, primary, fitMode, onSelect, onPositionChan
 
   const moveImage = (event) => {
     if (pointer.current !== event.pointerId || !start.current) return;
+    event.preventDefault();
+    event.stopPropagation();
     const rect = event.currentTarget.getBoundingClientRect();
     const x = Math.max(0, Math.min(100, start.current.x + ((event.clientX - start.current.clientX) / rect.width) * 100));
     const y = Math.max(0, Math.min(100, start.current.y + ((event.clientY - start.current.clientY) / rect.height) * 100));
     onPositionChange({ x, y });
   };
 
-  const endDrag = () => {
+  const endDrag = (event) => {
+    if (pointer.current !== event?.pointerId) return;
+    event?.preventDefault();
+    event?.stopPropagation();
     pointer.current = null;
     start.current = null;
   };
 
   return (
-    <div className={`image-tile-wrap ${selected ? 'is-selected' : ''}`}>
+    <div className={`image-tile-wrap ${selected ? 'is-selected' : ''}`} data-layout-image-id={image.id} onDragStart={(event) => event.preventDefault()}>
       <button
         className="image-tile"
         type="button"
@@ -95,6 +106,7 @@ function ImageTile({ image, selected, primary, fitMode, onSelect, onPositionChan
         onPointerMove={moveImage}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onDragStart={(event) => event.preventDefault()}
       >
         <img
           src={image.src}
@@ -121,6 +133,8 @@ export function App() {
   const [isPrinting, setPrinting] = useState(false);
   const [pdfUrl, setPdfUrl] = useState('');
   const [pdfProgress, setPdfProgress] = useState(0);
+  const [isMarqueeMode, setMarqueeMode] = useState(false);
+  const [marquee, setMarquee] = useState(null);
   const fileInput = useRef(null);
   const selectedIdsRef = useRef([]);
   const selectionAnchorRef = useRef(null);
@@ -128,6 +142,8 @@ export function App() {
   const hasRestoredRef = useRef(false);
   const saveTimerRef = useRef(null);
   const pdfUrlRef = useRef('');
+  const marqueeRef = useRef(null);
+  const fileDragDepthRef = useRef(0);
 
   const selectedId = selectedIds.at(-1) || null;
   const selected = images.find((image) => image.id === selectedId) || null;
@@ -292,6 +308,88 @@ export function App() {
 
   const removeSelected = () => selectedIds.length && removeImages(selectedIds);
 
+  const beginMarquee = (event, pageIndex) => {
+    if (event.button !== 0) return;
+    const startedOnImage = Boolean(event.target.closest('.image-tile-wrap'));
+    if (startedOnImage && !isMarqueeMode && !event.shiftKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const paper = event.currentTarget;
+    const rect = paper.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+    const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+    marqueeRef.current = {
+      pointerId: event.pointerId,
+      pageIndex,
+      paper,
+      rect,
+      startX: x,
+      startY: y,
+      baseIds: additive ? selectedIdsRef.current : [],
+    };
+    paper.setPointerCapture(event.pointerId);
+    if (!additive) setSelectedIds([]);
+    setMarquee({ pageIndex, left: x, top: y, width: 0, height: 0 });
+  };
+
+  const moveMarquee = (event) => {
+    const active = marqueeRef.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const x = Math.max(0, Math.min(active.rect.width, event.clientX - active.rect.left));
+    const y = Math.max(0, Math.min(active.rect.height, event.clientY - active.rect.top));
+    const left = Math.min(active.startX, x);
+    const top = Math.min(active.startY, y);
+    const right = Math.max(active.startX, x);
+    const bottom = Math.max(active.startY, y);
+    const hitIds = Array.from(active.paper.querySelectorAll('[data-layout-image-id]'))
+      .filter((element) => {
+        const target = element.getBoundingClientRect();
+        return target.right >= active.rect.left + left
+          && target.left <= active.rect.left + right
+          && target.bottom >= active.rect.top + top
+          && target.top <= active.rect.top + bottom;
+      })
+      .map((element) => element.dataset.layoutImageId);
+    const wanted = new Set([...active.baseIds, ...hitIds]);
+    setSelectedIds(images.filter((image) => wanted.has(image.id)).map((image) => image.id));
+    setMarquee({ pageIndex: active.pageIndex, left, top, width: right - left, height: bottom - top });
+  };
+
+  const endMarquee = (event) => {
+    const active = marqueeRef.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (active.paper.hasPointerCapture(event.pointerId)) active.paper.releasePointerCapture(event.pointerId);
+    marqueeRef.current = null;
+    setMarquee(null);
+  };
+
+  const handleFileDragEnter = (event) => {
+    if (!containsFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    fileDragDepthRef.current += 1;
+    setDropActive(true);
+  };
+
+  const handleFileDragLeave = (event) => {
+    if (!containsFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+    if (!fileDragDepthRef.current) setDropActive(false);
+  };
+
+  const handleFileDrop = (event) => {
+    if (!containsFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    fileDragDepthRef.current = 0;
+    setDropActive(false);
+    addFiles(event.dataTransfer.files);
+  };
+
   const generatePdf = async () => {
     if (!images.length) return;
     setPrinting(true);
@@ -327,10 +425,10 @@ export function App() {
   return (
     <div
       className={`app-shell ${isDropActive ? 'is-drop-active' : ''}`}
-      onDragEnter={(event) => { event.preventDefault(); setDropActive(true); }}
-      onDragOver={(event) => event.preventDefault()}
-      onDragLeave={(event) => { if (event.currentTarget === event.target) setDropActive(false); }}
-      onDrop={(event) => { event.preventDefault(); setDropActive(false); addFiles(event.dataTransfer.files); }}
+      onDragEnter={handleFileDragEnter}
+      onDragOver={(event) => { if (containsFiles(event.dataTransfer)) event.preventDefault(); }}
+      onDragLeave={handleFileDragLeave}
+      onDrop={handleFileDrop}
     >
       <style>{`@page { size: A4 ${settings.orientation}; margin: 0; }`}</style>
       <header className="topbar">
@@ -366,6 +464,7 @@ export function App() {
             <span>A4 {settings.orientation === 'portrait' ? '纵向' : '横向'}</span>
             <span>{settings.capacity === 9 ? '参考图版式：3 × 3' : `每页最多 ${settings.capacity} 张`}</span>
             <span>白边 {settings.marginMm}mm</span>
+            <button className={`marquee-mode-button ${isMarqueeMode ? 'active' : ''}`} type="button" onClick={() => setMarqueeMode((current) => !current)}>{isMarqueeMode ? '框选模式：开启' : '框选图片'}</button>
           </div>
           {!images.length ? (
             <div className="canvas-empty"><div className="paper-skeleton"><ImageSquare /></div><b>这里会显示准确比例的 A4 版面</b><span>拖入图片后自动生成三列联系表</span></div>
@@ -375,8 +474,12 @@ export function App() {
                 const template = templateForCount(page.length === settings.capacity ? settings.capacity : page.length);
                 return (
                   <section
-                    className="paper"
+                    className={`paper ${isMarqueeMode ? 'is-marquee-mode' : ''}`}
                     key={pageIndex}
+                    onPointerDownCapture={(event) => beginMarquee(event, pageIndex)}
+                    onPointerMove={moveMarquee}
+                    onPointerUp={endMarquee}
+                    onPointerCancel={endMarquee}
                     style={{
                       '--page-margin': `${settings.marginMm}mm`,
                       '--page-gap': `${settings.gapMm}mm`,
@@ -398,6 +501,7 @@ export function App() {
                         />
                       ))}
                     </div>
+                    {marquee?.pageIndex === pageIndex && <div className="selection-marquee" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }} />}
                     <span className="page-number">{pageIndex + 1} / {pages.length}</span>
                   </section>
                 );
