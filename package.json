@@ -1,0 +1,27 @@
+{
+  "name": "a4-print-studio",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "A4 image contact-sheet layout and browser printing web app",
+  "scripts": {
+    "dev": "vite",
+    "start": "vite --host 0.0.0.0",
+    "preview": "vite preview --host 0.0.0.0",
+    "build": "vite build",
+    "test": "vitest run",
+    "check": "npm run test && npm run build"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "jspdf": "^4.2.1",
+    "pdfjs-dist": "^6.2.108",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.0",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  }
+}
