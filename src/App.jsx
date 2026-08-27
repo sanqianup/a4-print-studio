@@ -12,13 +12,16 @@ import {
   Warning,
   X,
 } from '@phosphor-icons/react';
-import { effectiveDpi, pageGeometry, paginate, templateForCount } from './layout';
+import { A4, effectiveDpi, pageGeometry, paginate, templateForCount } from './layout';
 import { createLayoutPdf } from './pdf';
 import { loadWorkspace, saveWorkspace } from './storage';
+import { constrainFreeRect, ensureFreeLayouts, freePages } from './free-layout';
+import { FreeImage, FreeControls } from './FreeLayout';
 
 const PdfPreview = lazy(() => import('./PdfPreview').then((module) => ({ default: module.PdfPreview })));
 
 const DEFAULT_SETTINGS = {
+  layoutMode: 'grid',
   orientation: 'portrait',
   capacity: 9,
   marginMm: 12,
@@ -146,8 +149,10 @@ export function App() {
   const fileDragDepthRef = useRef(0);
 
   const selectedId = selectedIds.at(-1) || null;
-  const selected = images.find((image) => image.id === selectedId) || null;
-  const pages = useMemo(() => paginate(images, settings.capacity), [images, settings.capacity]);
+  const isFree = settings.layoutMode === 'free';
+  const freeImages = useMemo(() => isFree ? ensureFreeLayouts(images, settings) : [], [images, settings, isFree]);
+  const selected = (isFree ? freeImages : images).find((image) => image.id === selectedId) || null;
+  const pages = useMemo(() => isFree ? freePages(freeImages) : paginate(images, settings.capacity), [images, settings.capacity, isFree, freeImages]);
 
   const removeImages = useCallback((imageIds) => {
     const removing = new Set(imageIds);
@@ -206,7 +211,7 @@ export function App() {
     loadWorkspace().then((saved) => {
       if (cancelled) return;
       if (saved?.images?.length) {
-        setImages(saved.images);
+        setImages(saved.settings?.layoutMode === 'free' ? ensureFreeLayouts(saved.images, { ...DEFAULT_SETTINGS, ...saved.settings }) : saved.images);
         setSettings({ ...DEFAULT_SETTINGS, ...saved.settings });
         setSelectedIds(saved.images[0]?.id ? [saved.images[0].id] : []);
         setNotice({ type: 'success', message: `已从本机恢复 ${saved.images.length} 张图片和上次版面。` });
@@ -251,7 +256,7 @@ export function App() {
       event.preventDefault();
       event.stopPropagation();
       removeImages(imageIds);
-      setNotice({ type: 'success', message: `已删除 ${imageIds.length} 张选中图片，版面已自动重排。` });
+      setNotice({ type: 'success', message: `已删除 ${imageIds.length} 张选中图片，版面已更新。` });
     };
     document.addEventListener('keydown', handleDeleteKey, true);
     return () => document.removeEventListener('keydown', handleDeleteKey, true);
@@ -292,7 +297,7 @@ export function App() {
     setNotice({ type: 'loading', message: `正在读取 ${files.length} 张图片...` });
     try {
       const loaded = await Promise.all(files.map(readImage));
-      setImages((current) => [...current, ...loaded]);
+      setImages((current) => isFree ? ensureFreeLayouts([...current, ...loaded], settings) : [...current, ...loaded]);
       setSelectedIds(loaded[0]?.id ? [loaded[0].id] : []);
       setNotice({ type: 'success', message: `已加入 ${loaded.length} 张图片，版面已自动更新。` });
     } catch (error) {
@@ -306,12 +311,39 @@ export function App() {
 
   const resetSelected = () => updateSelected({ zoom: 100, x: 50, y: 50, rotation: 0 });
 
+  const updateFreeImage = (imageId, rect) => {
+    setImages((current) => ensureFreeLayouts(current, settings).map((image) => image.id === imageId
+      ? { ...image, free: constrainFreeRect(rect, settings.orientation) } : image));
+  };
+
+  const switchLayoutMode = (layoutMode) => {
+    if (layoutMode === 'free') setImages((current) => ensureFreeLayouts(current, settings));
+    setSettings((current) => ({ ...current, layoutMode }));
+    setMarqueeMode(false);
+    setMarquee(null);
+    marqueeRef.current = null;
+  };
+
+  const changeOrientation = (orientation) => {
+    if (isFree) setImages((current) => ensureFreeLayouts(current, { ...settings, orientation }));
+    setSettings((current) => ({ ...current, orientation }));
+  };
+
+  const changeLayer = (direction) => {
+    setImages((current) => {
+      const item = current.find((image) => image.id === selectedId);
+      const rest = current.filter((image) => image.id !== selectedId);
+      return !item ? current : direction === 'front' ? [...rest, item] : [item, ...rest];
+    });
+  };
+
   const removeSelected = () => selectedIds.length && removeImages(selectedIds);
 
   const beginMarquee = (event, pageIndex) => {
     if (event.button !== 0) return;
-    const startedOnImage = Boolean(event.target.closest('.image-tile-wrap'));
-    if (startedOnImage && !isMarqueeMode && !event.shiftKey) return;
+    if (event.target.closest('.free-resize, .free-rotate, .tile-delete')) return;
+    const startedOnImage = Boolean(event.target.closest('[data-layout-image-id]'));
+    if (startedOnImage && !isMarqueeMode && (isFree || !event.shiftKey)) return;
     event.preventDefault();
     event.stopPropagation();
     const paper = event.currentTarget;
@@ -462,7 +494,7 @@ export function App() {
         <section className="canvas-area" aria-label="A4 打印预览">
           <div className="canvas-toolbar">
             <span>A4 {settings.orientation === 'portrait' ? '纵向' : '横向'}</span>
-            <span>{settings.capacity === 9 ? '参考图版式：3 × 3' : `每页最多 ${settings.capacity} 张`}</span>
+            <span>{isFree ? '自由排版 · 移动 / 缩放 / 旋转' : settings.capacity === 9 ? '参考图版式：3 × 3' : `每页最多 ${settings.capacity} 张`}</span>
             <span>白边 {settings.marginMm}mm</span>
             <button className={`marquee-mode-button ${isMarqueeMode ? 'active' : ''}`} type="button" onClick={() => setMarqueeMode((current) => !current)}>{isMarqueeMode ? '框选模式：开启' : '框选图片'}</button>
           </div>
@@ -474,7 +506,7 @@ export function App() {
                 const template = templateForCount(page.length === settings.capacity ? settings.capacity : page.length);
                 return (
                   <section
-                    className={`paper ${isMarqueeMode ? 'is-marquee-mode' : ''}`}
+                    className={`paper ${isFree ? 'free-paper' : ''} ${isMarqueeMode ? 'is-marquee-mode' : ''}`}
                     key={pageIndex}
                     onPointerDownCapture={(event) => beginMarquee(event, pageIndex)}
                     onPointerMove={moveMarquee}
@@ -487,7 +519,12 @@ export function App() {
                       '--page-rows': template.rows,
                     }}
                   >
-                    <div className="photo-grid">
+                    {isFree ? <div className="free-canvas">
+                      <div className="free-margin-guide" style={{ inset: `${settings.marginMm / A4[settings.orientation][1] * 100}% ${settings.marginMm / A4[settings.orientation][0] * 100}%` }} />
+                      {page.map((image) => <FreeImage key={image.id} image={image} orientation={settings.orientation}
+                        selected={selectedIds.includes(image.id)} onSelect={(event) => selectImage(image.id, event)}
+                        onChange={(rect) => updateFreeImage(image.id, rect)} />)}
+                    </div> : <div className="photo-grid">
                       {page.map((image) => (
                         <ImageTile
                           key={image.id}
@@ -500,7 +537,7 @@ export function App() {
                           onDelete={removeSelected}
                         />
                       ))}
-                    </div>
+                    </div>}
                     {marquee?.pageIndex === pageIndex && <div className="selection-marquee" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }} />}
                     <span className="page-number">{pageIndex + 1} / {pages.length}</span>
                   </section>
@@ -513,16 +550,20 @@ export function App() {
         <aside className="right-panel panel">
           <div className="panel-heading"><span><b>版面设置</b><small>所有尺寸按毫米输出</small></span><SlidersHorizontal /></div>
           <div className="control-section">
-            <label className="field"><span>纸张方向</span><div className="segmented"><button type="button" className={settings.orientation === 'portrait' ? 'active' : ''} onClick={() => setSettings({ ...settings, orientation: 'portrait' })}>纵向</button><button type="button" className={settings.orientation === 'landscape' ? 'active' : ''} onClick={() => setSettings({ ...settings, orientation: 'landscape' })}>横向</button></div></label>
+            <div className="field"><span>排版模式</span><div className="segmented"><button type="button" className={!isFree ? 'active' : ''} onClick={() => switchLayoutMode('grid')}>自动拼版</button><button type="button" className={isFree ? 'active' : ''} onClick={() => switchLayoutMode('free')}>自由排版</button></div></div>
+            <label className="field"><span>纸张方向</span><div className="segmented"><button type="button" className={settings.orientation === 'portrait' ? 'active' : ''} onClick={() => changeOrientation('portrait')}>纵向</button><button type="button" className={settings.orientation === 'landscape' ? 'active' : ''} onClick={() => changeOrientation('landscape')}>横向</button></div></label>
+            {!isFree && <>
             <label className="field"><span>每页图片</span><select value={settings.capacity} onChange={(event) => setSettings({ ...settings, capacity: Number(event.target.value) })}><option value="4">4 张（2 × 2）</option><option value="6">6 张（3 × 2）</option><option value="9">9 张（3 × 3，参考图）</option><option value="12">12 张（3 × 4）</option></select></label>
             <label className="field"><span>图片适配</span><div className="segmented"><button type="button" className={settings.fitMode === 'cover' ? 'active' : ''} onClick={() => setSettings({ ...settings, fitMode: 'cover' })}>铺满</button><button type="button" className={settings.fitMode === 'contain' ? 'active' : ''} onClick={() => setSettings({ ...settings, fitMode: 'contain' })}>完整显示</button></div></label>
+            </>}
             <RangeField label="纸张白边" value={settings.marginMm} min={5} max={25} unit="mm" onChange={(marginMm) => setSettings({ ...settings, marginMm })} />
-            <RangeField label="图片间距" value={settings.gapMm} min={0} max={10} step={0.5} unit="mm" onChange={(gapMm) => setSettings({ ...settings, gapMm })} />
+            {!isFree && <RangeField label="图片间距" value={settings.gapMm} min={0} max={10} step={0.5} unit="mm" onChange={(gapMm) => setSettings({ ...settings, gapMm })} />}
           </div>
 
           <div className="control-section selected-controls">
-            <div className="section-title"><span><b>单图微调</b><small>{selected ? `${selected.name}${selectedIds.length > 1 ? `（共选 ${selectedIds.length} 张）` : ''}` : '先点击版面中的图片'}</small></span>{selected && <button type="button" className="icon-button" onClick={resetSelected} aria-label="重置图片调整"><ArrowClockwise /></button>}</div>
-            {selected ? <>
+            <div className="section-title"><span><b>{isFree ? '自由调整' : '单图微调'}</b><small>{selected ? `${selected.name}${selectedIds.length > 1 ? `（共选 ${selectedIds.length} 张）` : ''}` : '先点击版面中的图片'}</small></span>{selected && !isFree && <button type="button" className="icon-button" onClick={resetSelected} aria-label="重置图片调整"><ArrowClockwise /></button>}</div>
+            {selected && isFree ? <FreeControls image={selected} orientation={settings.orientation} pageCount={pages.length}
+              selectionCount={selectedIds.length} onChange={(rect) => updateFreeImage(selected.id, rect)} onLayer={changeLayer} onDelete={removeSelected} /> : selected ? <>
               <RangeField label="缩放" value={selected.zoom} min={80} max={200} unit="%" onChange={(zoom) => updateSelected({ zoom })} />
               <RangeField label="水平位置" value={Math.round(selected.x)} min={0} max={100} unit="%" onChange={(x) => updateSelected({ x })} />
               <RangeField label="垂直位置" value={Math.round(selected.y)} min={0} max={100} unit="%" onChange={(y) => updateSelected({ y })} />

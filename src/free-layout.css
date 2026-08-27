@@ -1,0 +1,24 @@
+.paper.free-paper { padding: 0; }
+.free-canvas { position: absolute; inset: 0; }
+.free-margin-guide { position: absolute; border: 1px dashed #d2d7dc; pointer-events: none; }
+.free-image { position: absolute; transform-origin: center; touch-action: none; }
+.free-image-body { display: block; width: 100%; height: 100%; border: 0; padding: 0; background: transparent; cursor: move; touch-action: none; }
+.free-image-body img { display: block; width: 100%; height: 100%; pointer-events: none; user-select: none; }
+.free-image.is-selected { outline: 2px solid var(--accent); }
+.free-resize, .free-rotate { position: absolute; padding: 0; border: 1px solid var(--accent); background: white; touch-action: none; }
+.free-resize { width: 12px; height: 12px; border-radius: 2px; }
+.free-resize.nw { top: -6px; left: -6px; cursor: nwse-resize; }
+.free-resize.ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.free-resize.sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+.free-resize.se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+.free-rotate { top: -33px; left: calc(50% - 12px); width: 24px; height: 24px; border-radius: 50%; cursor: grab; color: var(--accent); }
+.free-numbers { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-bottom: 13px; }
+.free-number { display: grid; gap: 5px; min-width: 0; font-size: 10px; color: #4d5967; }
+.free-number input { width: 100%; min-width: 0; height: 32px; padding: 0 7px; border: 1px solid #ccd3db; border-radius: 7px; background: white; font-size: 12px; }
+.free-help { font-size: 10px; line-height: 1.65; color: var(--muted); margin: 0 0 12px; }
+.free-actions { margin-top: 7px; margin-bottom: 8px; }
+.paper.is-marquee-mode .free-image-body { cursor: crosshair; }
+@media print {
+  .free-image.is-selected { outline: 0; }
+  .free-margin-guide, .free-resize, .free-rotate { display: none !important; }
+}

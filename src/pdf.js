@@ -1,4 +1,5 @@
 import { A4, templateForCount } from './layout';
+import { paintFreePage } from './free-layout';
 
 const RENDER_DPI = 240;
 
@@ -77,6 +78,23 @@ export async function createLayoutPdf(pages, settings, onProgress = () => {}) {
   for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
     if (pageIndex > 0) document.addPage('a4', orientation);
     const page = pages[pageIndex];
+    if (settings.layoutMode === 'free') {
+      const canvas = window.document.createElement('canvas');
+      canvas.width = Math.round(pageWidth / 25.4 * RENDER_DPI);
+      canvas.height = Math.round(pageHeight / 25.4 * RENDER_DPI);
+      const context = canvas.getContext('2d', { alpha: false });
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      await paintFreePage(context, page, canvas.width, canvas.height, orientation, loadImage, () => {
+        completed += 1;
+        onProgress(Math.round(completed / total * 100));
+      });
+      document.addImage(canvas.toDataURL('image/jpeg', .94), 'JPEG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
+      canvas.width = 0;
+      canvas.height = 0;
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      continue;
+    }
     const template = templateForCount(page.length === settings.capacity ? settings.capacity : page.length);
     const innerWidth = pageWidth - settings.marginMm * 2;
     const innerHeight = pageHeight - settings.marginMm * 2;
